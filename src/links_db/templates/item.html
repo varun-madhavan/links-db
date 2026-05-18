@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title or "Item" }} — links_db{% endblock %}
+{% block body %}
+<p class="muted"><a href="/">← Back</a></p>
+<h1 style="font-size:1.25rem;">{{ item.title or "Untitled" }}</h1>
+<p class="muted">{{ item.url }}</p>
+<p><span class="badge">{{ item.kind.value }}</span>
+  <span class="badge">{{ item.fetch_status.value }}</span>
+  <span class="badge">{{ item.item_status.value }}</span></p>
+{% if item.summary %}<p>{{ item.summary }}</p>{% endif %}
+<p class="tags">{% for t in item.tags %}<span>{{ t }}</span>{% endfor %}</p>
+<p>
+  <a class="btn" href="/read/{{ item.id }}">Read</a>
+        {% if item.item_status == 'inbox' %}
+  <button type="button" class="btn"
+    hx-post="/items/{{ item.id }}/archive"
+    hx-swap="none"
+    hx-on::after-request="window.location.href='/'">Archive</button>
+  {% endif %}
+</p>
+{% endblock %}

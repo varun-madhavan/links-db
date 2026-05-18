@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{% block title %}links_db{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; line-height: 1.5; color: #111; }
+    header { border-bottom: 1px solid #ddd; padding: 0.75rem 1rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    header a { color: #0b57d0; text-decoration: none; }
+    header a.active { font-weight: 600; text-decoration: underline; }
+    main { padding: 1rem; max-width: 52rem; margin: 0 auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    th, td { text-align: left; padding: 0.4rem 0.35rem; border-bottom: 1px solid #eee; vertical-align: top; }
+    .badge { font-size: 0.75rem; background: #f0f0f0; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .tags span { font-size: 0.75rem; background: #e8f0fe; margin-right: 0.25rem; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    form.add { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+    form.add input[type="url"] { flex: 1; min-width: 12rem; padding: 0.35rem 0.5rem; }
+    form.add input[name="tags"] { min-width: 10rem; padding: 0.35rem 0.5rem; }
+    button, .btn { cursor: pointer; padding: 0.35rem 0.65rem; border: 1px solid #ccc; background: #fafafa; border-radius: 4px; font-size: 0.9rem; }
+    .muted { color: #666; font-size: 0.85rem; }
+    .pager { margin-top: 1rem; display: flex; gap: 0.75rem; align-items: center; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header>
+    <strong>links_db</strong>
+    <a href="/" class="{{ 'active' if (tab|default('')) == 'inbox' else '' }}">Inbox</a>
+    <a href="/archive" class="{{ 'active' if (tab|default('')) == 'archive' else '' }}">Archive</a>
+  </header>
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ tab | capitalize }} — links_db{% endblock %}
+{% block body %}
+<form class="add" id="add-form">
+  <input type="url" name="url" placeholder="https://…" required/>
+  <input type="text" name="tags" placeholder="tags (comma-separated)"/>
+  <button type="submit">Add</button>
+</form>
+<p class="muted">{{ total }} item{% if total != 1 %}s{% endif %}</p>
+<table>
+  <thead>
+    <tr>
+      <th>Title</th>
+      <th>Domain</th>
+      <th>Kind</th>
+      <th>Added</th>
+      <th>Tags</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in items %}
+    <tr>
+      <td><a href="/item/{{ item.id }}">{{ item.title or item.url }}</a></td>
+      <td class="muted">{{ domain(item.url) }}</td>
+      <td><span class="badge">{{ item.kind.value }}</span></td>
+      <td class="muted">{{ item.added_at[:10] }}</td>
+      <td class="tags">{% for t in item.tags %}<span>{{ t }}</span>{% endfor %}</td>
+      <td>
+        <a class="btn" href="/read/{{ item.id }}">Read</a>
+        {% if tab == 'inbox' %}
+        <button type="button" class="btn"
+          hx-post="/items/{{ item.id }}/archive"
+          hx-swap="none"
+          hx-on::after-request="window.location.reload()">Archive</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">No items.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+<div class="pager">
+  {% if offset > 0 %}
+  <a href="?offset={{ offset - limit }}">Previous</a>
+  {% endif %}
+  {% if offset + limit < total %}
+  <a href="?offset={{ offset + limit }}">Next</a>
+  {% endif %}
+</div>
+<script>
+document.getElementById('add-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const url = fd.get('url').trim();
+  const raw = (fd.get('tags') || '').trim();
+  const tags = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const r = await fetch('/items', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ url, tags }),
+  });
+  if (!r.ok) { alert('Add failed: ' + (await r.text())); return; }
+  window.location.reload();
+});
+</script>
+{% endblock %}

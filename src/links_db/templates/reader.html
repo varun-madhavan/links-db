@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title or "Read" }} — links_db{% endblock %}
+{% block body %}
+<p class="muted"><a href="/">← Inbox</a> · <a href="{{ item.url }}">Original</a></p>
+<article class="reader">
+{{ inner_html | safe }}
+</article>
+{% endblock %}
