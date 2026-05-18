@@ -143,9 +143,11 @@ Defaults: **`http://127.0.0.1:8765`**
 | URL | Purpose |
 |-----|---------|
 | `http://127.0.0.1:8765/` | **Inbox** — items with `item_status=inbox` |
+| `http://127.0.0.1:8765/read-list` | **Read** — inbox items that have `read_at` set (opened in the reader at least once) |
 | `http://127.0.0.1:8765/archive` | **Archive** |
 | `http://127.0.0.1:8765/item/<id>` | Detail page for one item |
 | `http://127.0.0.1:8765/read/<id>` | Reader layout for saved HTML |
+| `http://127.0.0.1:8765/read` | Redirects to **`/read-list`** (same query string preserved) |
 | `http://127.0.0.1:8765/items/<id>/content` | Raw reader document (HTML wrapper or inline PDF) — what `links open` uses for articles |
 
 **Add a link:** use the form at the top (URL + comma-separated tags). It calls `POST /items` in the background and reloads the page.

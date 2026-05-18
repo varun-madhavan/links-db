@@ -251,10 +251,24 @@ def update_item_row(
     conn.execute(sql, values)
 
 
+def _dedupe_normalized_tags(tag: str | None, tags: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (*(tags or []), *([tag] if tag else [])):
+        n = normalize_tag(raw)
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
 def list_items(
     conn: sqlite3.Connection,
     *,
     tag: str | None = None,
+    tags: list[str] | None = None,
+    q: str | None = None,
+    require_read_at: bool | None = None,
     kind: ItemKind | None = None,
     fetch_status: FetchStatus | None = None,
     item_status: ItemStatus = ItemStatus.inbox,
@@ -274,15 +288,30 @@ def list_items(
         where.append("i.fetch_status = ?")
         params.append(fetch_status.value)
 
-    join_tag = ""
-    if tag:
-        tn = normalize_tag(tag)
-        if tn:
-            join_tag = """
-            JOIN item_tags itf ON itf.item_id = i.id
-            JOIN tags tf ON tf.id = itf.tag_id AND tf.name = ?
-            """
-            params.insert(0, tn)
+    if require_read_at is True:
+        where.append("i.read_at IS NOT NULL")
+    elif require_read_at is False:
+        where.append("i.read_at IS NULL")
+
+    qn = (q or "").strip()
+    if qn:
+        where.append(
+            "(instr(lower(coalesce(i.title, '')), lower(?)) > 0 "
+            "OR instr(lower(i.url), lower(?)) > 0)"
+        )
+        params.extend([qn, qn])
+
+    tag_names = _dedupe_normalized_tags(tag, tags)
+    if tag_names:
+        placeholders = ",".join("?" * len(tag_names))
+        where.append(
+            f"""EXISTS (
+            SELECT 1 FROM item_tags it2
+            JOIN tags t2 ON t2.id = it2.tag_id
+            WHERE it2.item_id = i.id AND t2.name IN ({placeholders})
+        )"""
+        )
+        params.extend(tag_names)
 
     where_sql = " AND ".join(where)
     order = {
@@ -292,15 +321,13 @@ def list_items(
     }[sort]
 
     count_sql = f"""
-        SELECT COUNT(DISTINCT i.id) FROM items i
-        {join_tag}
+        SELECT COUNT(*) FROM items i
         WHERE {where_sql}
     """
     total = int(conn.execute(count_sql, params).fetchone()[0])
 
     list_sql = f"""
-        SELECT DISTINCT i.id FROM items i
-        {join_tag}
+        SELECT i.id FROM items i
         WHERE {where_sql}
         ORDER BY {order}
         LIMIT ? OFFSET ?
@@ -319,6 +346,58 @@ def list_items(
     row_by_id = {dict(r)["id"]: dict(r) for r in rows}
     items = [row_to_item(row_by_id[i], _tags_for_item(conn, i)) for i in ids if i in row_by_id]
     return items, total
+
+
+def _like_prefix_pattern(prefix: str) -> str:
+    return (
+        prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    )
+
+
+def list_tag_names(
+    conn: sqlite3.Connection,
+    *,
+    q: str | None = None,
+    limit: int = 50,
+    item_status: ItemStatus | None = None,
+) -> list[str]:
+    prefix = (q or "").strip()
+    params: list[Any] = []
+    if item_status is not None:
+        where = ["i.item_status = ?"]
+        params.append(item_status.value)
+        if prefix:
+            where.append("t.name LIKE ? ESCAPE '\\'")
+            params.append(_like_prefix_pattern(prefix))
+        where_sql = " AND ".join(where)
+        sql = f"""
+            SELECT DISTINCT t.name
+            FROM tags t
+            JOIN item_tags it ON it.tag_id = t.id
+            JOIN items i ON i.id = it.item_id
+            WHERE {where_sql}
+            ORDER BY t.name
+            LIMIT ?
+        """
+        params.append(limit)
+    else:
+        if prefix:
+            sql = """
+                SELECT t.name FROM tags t
+                WHERE t.name LIKE ? ESCAPE '\\'
+                ORDER BY t.name
+                LIMIT ?
+            """
+            params = [_like_prefix_pattern(prefix), limit]
+        else:
+            sql = """
+                SELECT t.name FROM tags t
+                ORDER BY t.name
+                LIMIT ?
+            """
+            params = [limit]
+    rows = conn.execute(sql, params).fetchall()
+    return [r[0] for r in rows]
 
 
 def soft_delete_item(conn: sqlite3.Connection, item_id: str) -> None:

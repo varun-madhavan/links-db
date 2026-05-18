@@ -1,8 +1,55 @@
 {% extends "base.html" %}
 {% block title %}{{ item.title or "Read" }} — links_db{% endblock %}
+{% block head %}
+<style>
+  .reader-toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+  .reader-shell .reader { max-width: 100%; overflow-x: auto; }
+  .reader-shell .reader.reader--force-light {
+    background: #fff;
+    color: #111;
+    padding: 1rem;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+  }
+  .reader-shell .reader.reader--force-light a { color: #0b57d0; }
+</style>
+{% endblock %}
 {% block body %}
 <p class="muted"><a href="/">← Inbox</a> · <a href="{{ item.url }}">Original</a></p>
-<article class="reader">
-{{ inner_html | safe }}
-</article>
+<div class="reader-shell">
+  <div class="reader-toolbar">
+    <button type="button" id="reader-theme-toggle" aria-pressed="false"></button>
+  </div>
+  <article class="reader" id="reader-root">{{ inner_html | safe }}</article>
+</div>
+<script>
+(function () {
+  var KEY = 'links_reader_force_light';
+  var root = document.getElementById('reader-root');
+  var btn = document.getElementById('reader-theme-toggle');
+  if (!root || !btn) return;
+  function isForced() {
+    try { return sessionStorage.getItem(KEY) === '1'; } catch (_) { return false; }
+  }
+  function setForced(on) {
+    try {
+      if (on) sessionStorage.setItem(KEY, '1');
+      else sessionStorage.removeItem(KEY);
+    } catch (_) {}
+    root.classList.toggle('reader--force-light', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (on) {
+      btn.textContent = 'Follow app theme';
+      btn.setAttribute('aria-label', 'Article pane uses light background. Click to follow app theme again.');
+      btn.setAttribute('title', 'Using light article pane. Click to follow app theme.');
+    } else {
+      btn.textContent = 'Force light article';
+      btn.setAttribute('aria-label', 'Force a light background for the article when it is hard to read in dark mode.');
+      btn.setAttribute('title', 'Force light article pane for readability');
+    }
+  }
+  setForced(isForced());
+  btn.addEventListener('click', function () { setForced(!isForced()); });
+})();
+</script>
 {% endblock %}

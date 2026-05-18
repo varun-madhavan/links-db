@@ -5,9 +5,10 @@ import html
 import sqlite3
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -68,7 +69,10 @@ def create_app() -> FastAPI:
     @app.get("/items", response_model=ItemListResponse)
     def get_items(
         conn: Conn,
-        tag: str | None = None,
+        tag: Annotated[list[str], Query(description="Repeat for OR filter (same as multiple `tags`)")] = [],
+        tags: Annotated[list[str], Query(description="Repeat for OR filter (same as multiple `tag`)")] = [],
+        q: str | None = None,
+        require_read_at: bool | None = None,
         kind: ItemKind | None = None,
         fetch_status: FetchStatus | None = None,
         item_status: ItemStatus = ItemStatus.inbox,
@@ -76,9 +80,13 @@ def create_app() -> FastAPI:
         offset: int = Query(0, ge=0),
         sort: SortOption = SortOption.added_at_desc,
     ) -> ItemListResponse:
+        merged_tags = [s for s in (*tag, *tags) if (s or "").strip()] or None
         items, total = db.list_items(
             conn,
-            tag=tag,
+            tag=None,
+            tags=merged_tags,
+            q=q,
+            require_read_at=require_read_at,
             kind=kind,
             fetch_status=fetch_status,
             item_status=item_status,
@@ -87,6 +95,15 @@ def create_app() -> FastAPI:
             sort=sort,
         )
         return ItemListResponse(items=items, total=total, limit=limit, offset=offset)
+
+    @app.get("/tags", response_model=list[str])
+    def get_tags(
+        conn: Conn,
+        q: str | None = None,
+        limit: int = Query(50, ge=1, le=200),
+        item_status: ItemStatus | None = None,
+    ) -> list[str]:
+        return db.list_tag_names(conn, q=q, limit=limit, item_status=item_status)
 
     @app.get("/items/{item_id}", response_model=Item)
     def get_item(item_id: str, conn: Conn) -> Item:
@@ -199,56 +216,142 @@ body {{ max-width: 44rem; margin: 1.5rem auto; padding: 0 1rem; font-family: sys
 
         return urlparse(url).hostname or ""
 
+    def _list_filter_query(
+        q: str | None,
+        tag: list[str],
+        sort: SortOption,
+    ) -> str:
+        pairs: list[tuple[str, str]] = []
+        if q and q.strip():
+            pairs.append(("q", q.strip()))
+        for t in tag:
+            ts = (t or "").strip()
+            if ts:
+                pairs.append(("tag", ts))
+        pairs.append(("sort", sort.value))
+        return urlencode(pairs, doseq=True)
+
+    def _render_list(
+        request: Request,
+        conn: Conn,
+        *,
+        tab: str,
+        list_path: str,
+        item_status: ItemStatus,
+        require_read_at: bool | None,
+        tag_suggest_status: ItemStatus,
+        offset: int,
+        q: str | None,
+        tag: list[str],
+        sort: SortOption,
+    ) -> HTMLResponse:
+        limit = 50
+        clean_tags = [t.strip() for t in tag if t.strip()]
+        tag_list = clean_tags or None
+        items, total = db.list_items(
+            conn,
+            item_status=item_status,
+            tags=tag_list,
+            q=q,
+            require_read_at=require_read_at,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+        )
+        fq = _list_filter_query(q, clean_tags, sort)
+        return templates.TemplateResponse(
+            request,
+            "list.html",
+            {
+                "tab": tab,
+                "list_path": list_path,
+                "tag_suggest_status": tag_suggest_status.value,
+                "items": items,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "domain": _domain,
+                "q": (q or "").strip(),
+                "active_tags": clean_tags,
+                "sort": sort.value,
+                "filter_query": fq,
+            },
+        )
+
     @app.get("/", response_class=HTMLResponse)
     def ui_inbox(
         request: Request,
         conn: Conn,
         offset: int = Query(0, ge=0),
+        q: str | None = None,
+        tag: Annotated[list[str], Query()] = [],
+        sort: SortOption = SortOption.added_at_desc,
     ) -> HTMLResponse:
-        items, total = db.list_items(
-            conn,
-            item_status=ItemStatus.inbox,
-            limit=50,
-            offset=offset,
-            sort=SortOption.added_at_desc,
-        )
-        return templates.TemplateResponse(
+        return _render_list(
             request,
-            "list.html",
-            {
-                "tab": "inbox",
-                "items": items,
-                "total": total,
-                "offset": offset,
-                "limit": 50,
-                "domain": _domain,
-            },
+            conn,
+            tab="inbox",
+            list_path="/",
+            item_status=ItemStatus.inbox,
+            require_read_at=None,
+            tag_suggest_status=ItemStatus.inbox,
+            offset=offset,
+            q=q,
+            tag=tag,
+            sort=sort,
         )
+
+    @app.get("/read-list", response_class=HTMLResponse)
+    def ui_read_list(
+        request: Request,
+        conn: Conn,
+        offset: int = Query(0, ge=0),
+        q: str | None = None,
+        tag: Annotated[list[str], Query()] = [],
+        sort: SortOption = SortOption.added_at_desc,
+    ) -> HTMLResponse:
+        return _render_list(
+            request,
+            conn,
+            tab="read",
+            list_path="/read-list",
+            item_status=ItemStatus.inbox,
+            require_read_at=True,
+            tag_suggest_status=ItemStatus.inbox,
+            offset=offset,
+            q=q,
+            tag=tag,
+            sort=sort,
+        )
+
+    @app.get("/read")
+    def ui_read_tab_redirect(request: Request) -> RedirectResponse:
+        """Send `/read` (no item id) to the Read tab list; reader stays at `/read/{id}`."""
+        qs = request.url.query
+        loc = "/read-list" + (f"?{qs}" if qs else "")
+        return RedirectResponse(url=loc, status_code=307)
 
     @app.get("/archive", response_class=HTMLResponse)
     def ui_archive(
         request: Request,
         conn: Conn,
         offset: int = Query(0, ge=0),
+        q: str | None = None,
+        tag: Annotated[list[str], Query()] = [],
+        sort: SortOption = SortOption.added_at_desc,
     ) -> HTMLResponse:
-        items, total = db.list_items(
-            conn,
-            item_status=ItemStatus.archived,
-            limit=50,
-            offset=offset,
-            sort=SortOption.added_at_desc,
-        )
-        return templates.TemplateResponse(
+        return _render_list(
             request,
-            "list.html",
-            {
-                "tab": "archive",
-                "items": items,
-                "total": total,
-                "offset": offset,
-                "limit": 50,
-                "domain": _domain,
-            },
+            conn,
+            tab="archive",
+            list_path="/archive",
+            item_status=ItemStatus.archived,
+            require_read_at=None,
+            tag_suggest_status=ItemStatus.archived,
+            offset=offset,
+            q=q,
+            tag=tag,
+            sort=sort,
         )
 
     @app.get("/read/{item_id}", response_class=HTMLResponse)
@@ -256,6 +359,11 @@ body {{ max-width: 44rem; margin: 1.5rem auto; padding: 0 1rem; font-family: sys
         item = db.get_item_by_id(conn, item_id)
         if item is None:
             raise HTTPException(status_code=404, detail="Not found")
+        if item.read_at is None and item.item_status == ItemStatus.inbox:
+            db.update_item_row(conn, item_id, read_at=utc_now_iso())
+            conn.commit()
+            item = db.get_item_by_id(conn, item_id)
+            assert item is not None
         if item.kind == ItemKind.pdf and item.pdf_path:
             base = str(request.base_url).rstrip("/")
             return HTMLResponse(
@@ -269,7 +377,11 @@ body {{ max-width: 44rem; margin: 1.5rem auto; padding: 0 1rem; font-family: sys
                 "reader.html",
                 {"item": item, "inner_html": inner, "tab": ""},
                 headers={
-                    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+                    "Content-Security-Policy": (
+                        "default-src 'none'; "
+                        "style-src 'unsafe-inline'; "
+                        "script-src 'unsafe-inline' https://unpkg.com"
+                    ),
                 },
             )
         raise HTTPException(status_code=404, detail="Nothing to read")

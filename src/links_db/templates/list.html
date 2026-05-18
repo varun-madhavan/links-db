@@ -1,11 +1,44 @@
 {% extends "base.html" %}
 {% block title %}{{ tab | capitalize }} — links_db{% endblock %}
+{% block head %}
+<style>
+  .filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+  .filters input[type="search"], .filters input[type="text"], .filters select { padding: 0.35rem 0.5rem; font-size: 0.9rem; }
+  #filter-q { flex: 1; min-width: 10rem; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin-bottom: 0.75rem; min-height: 1.5rem; }
+  .chips .chip { font-size: 0.8rem; background: var(--chip-bg); padding: 0.15rem 0.45rem; border-radius: 999px; display: inline-flex; gap: 0.25rem; align-items: center; }
+  .chips .chip button { border: none; background: transparent; cursor: pointer; padding: 0 0.15rem; font-size: 1rem; line-height: 1; color: var(--chip-btn-fg); }
+  .tags span.tag-filter { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+  .filter-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+</style>
+{% endblock %}
 {% block body %}
 <form class="add" id="add-form">
   <input type="url" name="url" placeholder="https://…" required/>
   <input type="text" name="tags" placeholder="tags (comma-separated)"/>
   <button type="submit">Add</button>
 </form>
+
+<div class="filters">
+  <input type="search" id="filter-q" name="q" placeholder="Search title or URL…" value="{{ q }}" autocomplete="off"/>
+  <input type="text" id="tag-filter-input" list="tag-datalist" placeholder="Add tag filter" autocomplete="off"/>
+  <datalist id="tag-datalist"></datalist>
+  <label class="muted" for="filter-sort">Sort</label>
+  <select id="filter-sort">
+    <option value="added_at_desc" {% if sort == 'added_at_desc' %}selected{% endif %}>Added (newest)</option>
+    <option value="added_at_asc" {% if sort == 'added_at_asc' %}selected{% endif %}>Added (oldest)</option>
+    <option value="title_asc" {% if sort == 'title_asc' %}selected{% endif %}>Title (A–Z)</option>
+  </select>
+</div>
+<div class="chips" id="tag-chips" aria-label="Active tag filters">
+  {% for t in active_tags %}
+  <span class="chip" data-tag="{{ t | e }}">{{ t }}<button type="button" aria-label="Remove {{ t | e }}" data-remove="{{ t | e }}">×</button></span>
+  {% endfor %}
+</div>
+<div class="filter-actions">
+  <button type="button" id="filter-clear">Clear filters</button>
+</div>
+
 <p class="muted">{{ total }} item{% if total != 1 %}s{% endif %}</p>
 <table>
   <thead>
@@ -25,7 +58,7 @@
       <td class="muted">{{ domain(item.url) }}</td>
       <td><span class="badge">{{ item.kind.value }}</span></td>
       <td class="muted">{{ item.added_at[:10] }}</td>
-      <td class="tags">{% for t in item.tags %}<span>{{ t }}</span>{% endfor %}</td>
+      <td class="tags">{% for t in item.tags %}<span class="tag-filter" data-tag="{{ t | e }}">{{ t }}</span>{% endfor %}</td>
       <td>
         <a class="btn" href="/read/{{ item.id }}">Read</a>
         {% if tab == 'inbox' %}
@@ -43,26 +76,164 @@
 </table>
 <div class="pager">
   {% if offset > 0 %}
-  <a href="?offset={{ offset - limit }}">Previous</a>
+  <a href="{{ list_path }}?{% if filter_query %}{{ filter_query }}&{% endif %}offset={{ offset - limit }}">Previous</a>
   {% endif %}
   {% if offset + limit < total %}
-  <a href="?offset={{ offset + limit }}">Next</a>
+  <a href="{{ list_path }}?{% if filter_query %}{{ filter_query }}&{% endif %}offset={{ offset + limit }}">Next</a>
   {% endif %}
 </div>
 <script>
-document.getElementById('add-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const fd = new FormData(e.target);
-  const url = fd.get('url').trim();
-  const raw = (fd.get('tags') || '').trim();
-  const tags = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
-  const r = await fetch('/items', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-    body: JSON.stringify({ url, tags }),
+(function () {
+  const LIST_PATH = "{{ list_path }}";
+  const TAG_STATUS = "{{ tag_suggest_status }}";
+  const DEBOUNCE_MS = 320;
+
+  function currentParams() {
+    const u = new URL(window.location.href);
+    return u.searchParams;
+  }
+
+  function tagsFromParams(sp) {
+    return sp.getAll('tag').map((s) => s.trim()).filter(Boolean);
+  }
+
+  function assignNavigate(sp) {
+    const next = new URLSearchParams();
+    const q = sp.get('q');
+    if (q) next.set('q', q);
+    for (const t of sp.getAll('tag')) {
+      if (t.trim()) next.append('tag', t.trim());
+    }
+    next.set('sort', sp.get('sort') || 'added_at_desc');
+    const off = sp.get('offset');
+    if (off && off !== '0') next.set('offset', off);
+    const qs = next.toString();
+    window.location.assign(LIST_PATH + (qs ? '?' + qs : ''));
+  }
+
+  function setTagsOnParams(sp, tags) {
+    const keys = [...sp.keys()];
+    for (const k of keys) {
+      if (k === 'tag') sp.delete(k);
+    }
+    for (const t of tags) sp.append('tag', t);
+  }
+
+  const qInput = document.getElementById('filter-q');
+  const sortSel = document.getElementById('filter-sort');
+  const tagInput = document.getElementById('tag-filter-input');
+  const datalist = document.getElementById('tag-datalist');
+  let qTimer = null;
+
+  function scheduleNavigateFromQ() {
+    clearTimeout(qTimer);
+    qTimer = setTimeout(() => {
+      const sp = currentParams();
+      const v = qInput.value.trim();
+      if (v) sp.set('q', v); else sp.delete('q');
+      sp.delete('offset');
+      assignNavigate(sp);
+    }, DEBOUNCE_MS);
+  }
+
+  qInput.addEventListener('input', scheduleNavigateFromQ);
+  qInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(qTimer);
+      const sp = currentParams();
+      const v = qInput.value.trim();
+      if (v) sp.set('q', v); else sp.delete('q');
+      sp.delete('offset');
+      assignNavigate(sp);
+    }
   });
-  if (!r.ok) { alert('Add failed: ' + (await r.text())); return; }
-  window.location.reload();
-});
+
+  sortSel.addEventListener('change', () => {
+    const sp = currentParams();
+    sp.set('sort', sortSel.value);
+    sp.delete('offset');
+    assignNavigate(sp);
+  });
+
+  let tagSuggestTimer = null;
+  tagInput.addEventListener('input', () => {
+    clearTimeout(tagSuggestTimer);
+    const prefix = tagInput.value.trim();
+    tagSuggestTimer = setTimeout(async () => {
+      try {
+        const url = '/tags?limit=50&item_status=' + encodeURIComponent(TAG_STATUS)
+          + (prefix ? '&q=' + encodeURIComponent(prefix) : '');
+        const r = await fetch(url, { headers: { Accept: 'application/json' } });
+        if (!r.ok) return;
+        const names = await r.json();
+        datalist.innerHTML = '';
+        for (const n of names) {
+          const opt = document.createElement('option');
+          opt.value = n;
+          datalist.appendChild(opt);
+        }
+      } catch (_) {}
+    }, 200);
+  });
+
+  function addTagAndGo(raw) {
+    const t = raw.trim();
+    if (!t) return;
+    const sp = currentParams();
+    const cur = tagsFromParams(sp);
+    const lower = t.toLowerCase();
+    if (!cur.some((x) => x.toLowerCase() === lower)) cur.push(t);
+    setTagsOnParams(sp, cur);
+    sp.delete('offset');
+    tagInput.value = '';
+    assignNavigate(sp);
+  }
+
+  tagInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addTagAndGo(tagInput.value);
+    }
+  });
+
+  document.getElementById('tag-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-remove]');
+    if (!btn) return;
+    const remove = btn.getAttribute('data-remove');
+    const sp = currentParams();
+    const cur = tagsFromParams(sp).filter((x) => x !== remove);
+    setTagsOnParams(sp, cur);
+    sp.delete('offset');
+    assignNavigate(sp);
+  });
+
+  document.querySelector('table tbody').addEventListener('click', (e) => {
+    const span = e.target.closest('.tag-filter[data-tag]');
+    if (!span) return;
+    addTagAndGo(span.getAttribute('data-tag') || '');
+  });
+
+  document.getElementById('filter-clear').addEventListener('click', () => {
+    const sp = new URLSearchParams();
+    sp.set('sort', 'added_at_desc');
+    assignNavigate(sp);
+  });
+
+  document.getElementById('add-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const url = fd.get('url').trim();
+    const raw = (fd.get('tags') || '').trim();
+    const tags = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const r = await fetch('/items', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ url, tags }),
+    });
+    if (!r.ok) { alert('Add failed: ' + (await r.text())); return; }
+    window.location.reload();
+  });
+})();
 </script>
 {% endblock %}

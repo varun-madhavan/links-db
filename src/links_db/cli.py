@@ -79,32 +79,58 @@ def add(
 
 @app.command("list")
 def list_cmd(
-    status: str = typer.Option("inbox", "--status", "-s", help="inbox|archived|deleted"),
-    tag: str | None = typer.Option(None, "--tag"),
+    status: str = typer.Option(
+        "inbox",
+        "--status",
+        "-s",
+        help="inbox | archived | deleted | read (inbox items with read_at set)",
+    ),
+    tag: list[str] = typer.Option(
+        [],
+        "--tag",
+        help="Filter by tag, OR if repeated (normalized like the server)",
+    ),
+    q: str | None = typer.Option(None, "--query", "-q", help="Search title or URL (substring)"),
     limit: int = typer.Option(50, "--limit", "-n"),
     offset: int = typer.Option(0, "--offset"),
 ) -> None:
+    status_l = status.strip().lower()
+    if status_l == "read":
+        st = ItemStatus.inbox
+        require_read_at: bool | None = True
+    else:
+        st = ItemStatus(status_l)
+        require_read_at = None
+
+    tag_list = [t.strip() for t in tag if t.strip()] or None
+
     if _use_http():
-        params: dict[str, Any] = {
-            "item_status": status,
-            "limit": limit,
-            "offset": offset,
-        }
-        if tag:
-            params["tag"] = tag
-        r = _http("GET", "/items", params=params, headers={"Accept": "application/json"})
+        pairs: list[tuple[str, str]] = [
+            ("item_status", st.value),
+            ("limit", str(limit)),
+            ("offset", str(offset)),
+        ]
+        if require_read_at is True:
+            pairs.append(("require_read_at", "true"))
+        for t in tag_list or []:
+            pairs.append(("tag", t))
+        if q and q.strip():
+            pairs.append(("q", q.strip()))
+        r = _http("GET", "/items", params=pairs, headers={"Accept": "application/json"})
         r.raise_for_status()
         data = r.json()
         for it in data["items"]:
             typer.echo(f"{it['id']}\t{it.get('title') or it['url']}\t{it['kind']}")
         typer.echo(f"— total {data['total']}")
         return
-    st = ItemStatus(status)
+
     with _db_session() as (conn, _):
         items, total = db.list_items(
             conn,
             item_status=st,
-            tag=tag,
+            tags=tag_list,
+            q=q,
+            require_read_at=require_read_at,
             limit=limit,
             offset=offset,
             sort=SortOption.added_at_desc,
